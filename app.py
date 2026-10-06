@@ -44,7 +44,7 @@ def summarize_dialogue(dialogue: str) -> str:
 
     inputs = t(
         input_text,
-        max_length=512,
+        max_length=256,
         truncation=True,
         return_tensors="pt"
     ).to(device)
@@ -54,8 +54,8 @@ def summarize_dialogue(dialogue: str) -> str:
         targets = m.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
-            max_length=150,
-            min_length=30,
+            max_length=80,
+            min_length=15,
             num_beams=1,
             early_stopping=True
         )
