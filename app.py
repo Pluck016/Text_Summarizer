@@ -11,10 +11,10 @@ app = FastAPI(title="Text Summarizer App", description="Text Summarization using
 MODEL_NAME = "t5-small"
 model = None
 tokenizer = None
-device = torch.device("cpu")  # Force CPU execution for Render
+device = torch.device("cpu")
 
 def get_model_and_tokenizer():
-    """Lazy load the model only when a summary request is triggered."""
+    """Load model into global memory once on demand."""
     global model, tokenizer
     if model is None or tokenizer is None:
         tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
@@ -39,6 +39,7 @@ def summarize_dialogue(dialogue: str) -> str:
     m, t = get_model_and_tokenizer()
     cleaned_text = clean_data(dialogue)
 
+    # T5 prompt prefix requirement
     input_text = "summarize: " + cleaned_text
 
     inputs = t(
@@ -48,14 +49,14 @@ def summarize_dialogue(dialogue: str) -> str:
         return_tensors="pt"
     ).to(device)
 
-    # Disable gradient tracking and lower beam count to minimize memory overhead
+    # Disable gradient computation & use greedy search to stay under 512MB RAM
     with torch.no_grad():
         targets = m.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_length=150,
             min_length=30,
-            num_beams=1,  # Reduced from 4 to 2 to prevent RAM spikes
+            num_beams=1,  # Fast greedy decoding for Render CPU
             early_stopping=True
         )
     
