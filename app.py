@@ -3,26 +3,25 @@ from pydantic import BaseModel
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
 import re 
-from fastapi.templating import Jinja2Templates # UI
+from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Text Summarizer App", description="Text Summarization using T5", version="1.0")
 
-# Replace lines 12 & 13 with:
-MODEL_NAME = "t5-small"  # or "t5-base"
-model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
-tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
+MODEL_NAME = "t5-small"
+model = None
+tokenizer = None
+device = torch.device("cpu")  # Force CPU execution for Render
 
-# device
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-
-model.to(device)
+def get_model_and_tokenizer():
+    """Lazy load the model only when a summary request is triggered."""
+    global model, tokenizer
+    if model is None or tokenizer is None:
+        tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
+        model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+        model.to(device)
+        model.eval()
+    return model, tokenizer
 
 templates = Jinja2Templates(directory=".")
 
@@ -30,17 +29,17 @@ class DialogueInput(BaseModel):
     dialogue: str
 
 def clean_data(text):
-    text = re.sub(r"\r\n", " ", text) # lines
-    text = re.sub(r"\s+", " ", text) # spaces
-    text = re.sub(r"<.*?>", " ", text) # html tags <p> <h1>
+    text = re.sub(r"\r\n", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"<.*?>", " ", text)
     text = text.strip().lower()
     return text
 
-def summarize_dialogue(dialogue : str) -> str:
-    dialogue = clean_data(dialogue) # clean
+def summarize_dialogue(dialogue: str) -> str:
+    m, t = get_model_and_tokenizer()
+    dialogue = clean_data(dialogue)
 
-    # tokenize
-    inputs = tokenizer(
+    inputs = t(
         dialogue,
         padding="max_length",
         max_length=512,
@@ -48,20 +47,18 @@ def summarize_dialogue(dialogue : str) -> str:
         return_tensors="pt"
     ).to(device)
 
-    # generate the summary => token ids
-    model.to(device)
-    targets = model.generate(
-        input_ids=inputs["input_ids"],
-        attention_mask=inputs["attention_mask"],
-        max_length=150,
-        num_beams=4,
-        early_stopping=True
-    )
+    # Disable gradient tracking and lower beam count to minimize memory overhead
+    with torch.no_grad():
+        targets = m.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_length=150,
+            num_beams=2,  # Reduced from 4 to 2 to prevent RAM spikes
+            early_stopping=True
+        )
     
-    # decoded our output
-    summary = tokenizer.decode(targets[0], skip_special_tokens=True) # EOS, SEP
+    summary = t.decode(targets[0], skip_special_tokens=True)
     return summary
-
 
 # API endpoints
 @app.post("/summarize/")
@@ -71,7 +68,6 @@ async def summarize(dialogue_input: DialogueInput):
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    # Modern FastAPI syntax:
     return templates.TemplateResponse(
         request=request, 
         name="index.html", 
