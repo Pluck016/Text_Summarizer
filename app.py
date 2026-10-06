@@ -1,4 +1,6 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 import torch
@@ -6,52 +8,54 @@ import re
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 
-app = FastAPI(title="Text Summarizer App", description="Text Summarization using T5", version="1.0")
-
-MODEL_NAME = "t5-small"
+# Global variables for model and tokenizer
 model = None
 tokenizer = None
 device = torch.device("cpu")
 
-def get_model_and_tokenizer():
-    """Lazy load model to minimize RAM overhead."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load model once during startup so web requests process immediately."""
     global model, tokenizer
-    if model is None or tokenizer is None:
-        tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
-        model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
-        model.to(device)
-        model.eval()
-    return model, tokenizer
+    MODEL_NAME = "t5-small"
+    tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
+    model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+    model.to(device)
+    model.eval()
+    yield
+
+app = FastAPI(
+    title="Text Summarizer App", 
+    description="Text Summarization using T5", 
+    version="1.0",
+    lifespan=lifespan
+)
 
 templates = Jinja2Templates(directory=".")
 
 class DialogueInput(BaseModel):
     dialogue: str
 
-def clean_data(text):
+def clean_data(text: str) -> str:
     text = re.sub(r"\r\n", " ", text)
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"<.*?>", " ", text)
-    text = text.strip().lower()
-    return text
+    return text.strip().lower()
 
-def summarize_dialogue(dialogue: str) -> str:
-    m, t = get_model_and_tokenizer()
+def run_inference(dialogue: str) -> str:
+    """CPU inference function executed off the main event loop."""
     cleaned_text = clean_data(dialogue)
-
-    # Required T5 prefix
     input_text = "summarize: " + cleaned_text
 
-    inputs = t(
+    inputs = tokenizer(
         input_text,
         max_length=256,
         truncation=True,
         return_tensors="pt"
     ).to(device)
 
-    # Disable gradient computation & use greedy decoding (num_beams=1)
     with torch.no_grad():
-        targets = m.generate(
+        targets = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_length=80,
@@ -60,14 +64,14 @@ def summarize_dialogue(dialogue: str) -> str:
             early_stopping=True
         )
     
-    summary = t.decode(targets[0], skip_special_tokens=True)
-    return summary
+    return tokenizer.decode(targets[0], skip_special_tokens=True)
 
 # API endpoints
 @app.post("/summarize/")
 async def summarize(dialogue_input: DialogueInput):
     try:
-        summary = summarize_dialogue(dialogue_input.dialogue)
+        # Offload CPU heavy work to prevent blocking the web gateway
+        summary = await run_in_threadpool(run_inference, dialogue_input.dialogue)
         return {"summary": summary}
     except Exception as e:
         return {"summary": f"Inference Error: {str(e)}"}
