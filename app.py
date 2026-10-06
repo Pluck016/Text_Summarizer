@@ -14,7 +14,7 @@ tokenizer = None
 device = torch.device("cpu")
 
 def get_model_and_tokenizer():
-    """Load model into global memory once on demand."""
+    """Load model into memory on-demand to minimize startup RAM overhead."""
     global model, tokenizer
     if model is None or tokenizer is None:
         tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
@@ -39,7 +39,7 @@ def summarize_dialogue(dialogue: str) -> str:
     m, t = get_model_and_tokenizer()
     cleaned_text = clean_data(dialogue)
 
-    # T5 prompt prefix requirement
+    # Required T5 prompt prefix
     input_text = "summarize: " + cleaned_text
 
     inputs = t(
@@ -49,14 +49,14 @@ def summarize_dialogue(dialogue: str) -> str:
         return_tensors="pt"
     ).to(device)
 
-    # Disable gradient computation & use greedy search to stay under 512MB RAM
+    # Disable gradient tracking & use greedy search (num_beams=1) to stay well under 512MB RAM
     with torch.no_grad():
         targets = m.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_length=150,
             min_length=30,
-            num_beams=1,  # Fast greedy decoding for Render CPU
+            num_beams=1,
             early_stopping=True
         )
     
