@@ -1,45 +1,77 @@
-import os
-import requests
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+import torch
+import re 
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Text Summarizer App", description="Text Summarization using T5", version="1.0")
 
+MODEL_NAME = "t5-small"
+model = None
+tokenizer = None
+device = torch.device("cpu")
+
+def get_model_and_tokenizer():
+    """Lazy load model to minimize memory overhead."""
+    global model, tokenizer
+    if model is None or tokenizer is None:
+        tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
+        model = T5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+        model.to(device)
+        model.eval()
+    return model, tokenizer
+
 templates = Jinja2Templates(directory=".")
-
-# Option A: Paste token directly here, or Option B: set HF_TOKEN in Render Environment Variables
-HF_TOKEN = os.getenv("HF_TOKEN", "YOUR_HUGGINGFACE_TOKEN_HERE")
-API_URL = "https://api-inference.huggingface.co/models/t5-small"
-
-headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
 class DialogueInput(BaseModel):
     dialogue: str
 
-def summarize_via_hf_api(text: str) -> str:
-    payload = {
-        "inputs": f"summarize: {text}",
-        "parameters": {"max_length": 150, "min_length": 30}
-    }
-    
-    response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-    
-    if response.status_code == 200:
-        result = response.json()
-        if isinstance(result, list) and len(result) > 0:
-            return result[0].get("summary_text", "No summary text generated.")
-        return str(result)
-    elif response.status_code == 503:
-        return "Model is currently loading on Hugging Face. Please try again in 20 seconds!"
-    else:
-        return f"Hugging Face API Error ({response.status_code}): {response.text}"
+def clean_data(text):
+    text = re.sub(r"\r\n", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"<.*?>", " ", text)
+    text = text.strip().lower()
+    return text
 
+def summarize_dialogue(dialogue: str) -> str:
+    m, t = get_model_and_tokenizer()
+    cleaned_text = clean_data(dialogue)
+
+    # Prefix required for T5 model
+    input_text = "summarize: " + cleaned_text
+
+    # Cap input token length to 256 for fast execution
+    inputs = t(
+        input_text,
+        max_length=256,
+        truncation=True,
+        return_tensors="pt"
+    ).to(device)
+
+    # Disable gradient tracking & use greedy search (num_beams=1)
+    with torch.no_grad():
+        targets = m.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_length=80,
+            min_length=15,
+            num_beams=1,
+            early_stopping=True
+        )
+    
+    summary = t.decode(targets[0], skip_special_tokens=True)
+    return summary
+
+# API endpoints
 @app.post("/summarize/")
 async def summarize(dialogue_input: DialogueInput):
-    summary = summarize_via_hf_api(dialogue_input.dialogue)
-    return {"summary": summary}
+    try:
+        summary = summarize_dialogue(dialogue_input.dialogue)
+        return {"summary": summary}
+    except Exception as e:
+        return {"summary": f"Inference Error: {str(e)}"}
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
