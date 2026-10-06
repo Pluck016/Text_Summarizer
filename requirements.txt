@@ -1,5 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.9.0+cpu
+transformers
 fastapi
 uvicorn
 jinja2
 pydantic
-requests
+sentencepiece

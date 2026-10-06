@@ -14,7 +14,7 @@ tokenizer = None
 device = torch.device("cpu")
 
 def get_model_and_tokenizer():
-    """Lazy load model to minimize memory overhead."""
+    """Lazy load model to minimize RAM overhead."""
     global model, tokenizer
     if model is None or tokenizer is None:
         tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
@@ -39,10 +39,9 @@ def summarize_dialogue(dialogue: str) -> str:
     m, t = get_model_and_tokenizer()
     cleaned_text = clean_data(dialogue)
 
-    # Prefix required for T5 model
+    # Required T5 prefix
     input_text = "summarize: " + cleaned_text
 
-    # Cap input token length to 256 for fast execution
     inputs = t(
         input_text,
         max_length=256,
@@ -50,7 +49,7 @@ def summarize_dialogue(dialogue: str) -> str:
         return_tensors="pt"
     ).to(device)
 
-    # Disable gradient tracking & use greedy search (num_beams=1)
+    # Disable gradient computation & use greedy decoding (num_beams=1)
     with torch.no_grad():
         targets = m.generate(
             input_ids=inputs["input_ids"],
