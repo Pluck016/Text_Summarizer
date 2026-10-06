@@ -37,11 +37,12 @@ def clean_data(text):
 
 def summarize_dialogue(dialogue: str) -> str:
     m, t = get_model_and_tokenizer()
-    dialogue = clean_data(dialogue)
+    cleaned_text = clean_data(dialogue)
+
+    input_text = "summarize: " + cleaned_text
 
     inputs = t(
-        dialogue,
-        padding="max_length",
+        input_text,
         max_length=512,
         truncation=True,
         return_tensors="pt"
@@ -53,7 +54,8 @@ def summarize_dialogue(dialogue: str) -> str:
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_length=150,
-            num_beams=2,  # Reduced from 4 to 2 to prevent RAM spikes
+            min_length=30,
+            num_beams=1,  # Reduced from 4 to 2 to prevent RAM spikes
             early_stopping=True
         )
     
